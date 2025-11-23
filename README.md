@@ -1,4 +1,4 @@
-# 🎨 BlazorWhiteBoard
+# 🎨 Real-time Collaborative Blazor Whiteboard
 
 A real-time collaborative whiteboard application built with **Blazor Server** and **SignalR**. Draw, sketch, and collaborate with multiple users simultaneously with live cursor tracking, shape previews, and instant synchronization.
 
