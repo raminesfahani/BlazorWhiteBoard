@@ -1,0 +1,919 @@
+@page "/whiteboard"
+@page "/"
+@using BlazorWhiteBoard.Application.DTOs
+@using BlazorWhiteBoard.Application.Interfaces
+@using BlazorWhiteBoard.Domain.Entities
+@using BlazorWhiteBoard.Domain.Enums
+@using BlazorWhiteBoard.Domain.Extensions
+@using Microsoft.AspNetCore.SignalR.Client
+@implements IAsyncDisposable
+@inject NavigationManager Navigation
+@inject IWhiteboardStateService StateService
+@inject ICanvasInteropService CanvasInterop
+@rendermode InteractiveServer
+
+<PageTitle>Collaborative Whiteboard</PageTitle>
+
+@if (!_hasJoinedSession)
+{
+    <div class="modal-overlay">
+        <div class="user-prompt-modal">
+            <div class="modal-header">
+                <i class="fa-solid fa-chalkboard-user fa-3x me-3"></i>
+                <h2>Join Whiteboard Session</h2>
+            </div>
+            <div class="modal-body">
+                <p>Enter your name to start collaborating</p>
+                <br />
+                <div class="form-group">
+                    <label for="username-input">
+                        <i class="fa-solid fa-signature"></i> Your Name
+                    </label>
+                    <input type="text" 
+                           id="username-input"
+                           class="form-control form-control-lg" 
+                           @bind="_userName" 
+                           @bind:event="oninput"
+                           @onkeypress="HandleKeyPress"
+                           placeholder="Enter your name..."
+                           maxlength="20"
+                           autofocus />
+                </div>
+                <button class="btn btn-primary btn-lg w-100" 
+                        @onclick="JoinSessionAsync" 
+                        disabled="@string.IsNullOrWhiteSpace(_userName)">
+                    <i class="fa-solid fa-right-to-bracket me-2"></i> Join Session
+                </button>
+            </div>
+        </div>
+    </div>
+}
+else
+{
+    <div class="whiteboard-fullscreen">
+        <!-- Floating Toolbar -->
+        <div class="floating-toolbar">
+            <div class="toolbar-header">
+                <i class="fa-solid fa-palette"></i>
+                <span>Tools</span>
+            </div>
+            
+            <div class="toolbar-section">
+                <label class="section-label"><i class="fa-solid fa-paintbrush"></i> Draw</label>
+                <div class="tool-buttons">
+                    <button class="tool-btn @(IsToolSelected(DrawingTool.Pen))" 
+                            @onclick="@(() => SelectTool(DrawingTool.Pen))" 
+                            title="@DrawingTool.Pen.GetDisplayName()">
+                        <i class="@DrawingTool.Pen.GetIconClass()"></i>
+                    </button>
+                    <button class="tool-btn @(IsToolSelected(DrawingTool.Eraser))" 
+                            @onclick="@(() => SelectTool(DrawingTool.Eraser))" 
+                            title="@DrawingTool.Eraser.GetDisplayName()">
+                        <i class="@DrawingTool.Eraser.GetIconClass()"></i>
+                    </button>
+                    <button class="tool-btn @(IsToolSelected(DrawingTool.Laser))" 
+                            @onclick="@(() => SelectTool(DrawingTool.Laser))" 
+                            title="@DrawingTool.Laser.GetDisplayName()">
+                        <i class="@DrawingTool.Laser.GetIconClass()"></i>
+                    </button>
+                </div>
+            </div>
+
+            <div class="toolbar-section">
+                <label class="section-label"><i class="fa-solid fa-shapes"></i> Shapes</label>
+                <div class="tool-buttons">
+                    <button class="tool-btn @(IsToolSelected(DrawingTool.Line))" 
+                            @onclick="@(() => SelectTool(DrawingTool.Line))" 
+                            title="@DrawingTool.Line.GetDisplayName()">
+                        <i class="@DrawingTool.Line.GetIconClass()"></i>
+                    </button>
+                    <button class="tool-btn @(IsToolSelected(DrawingTool.Arrow))" 
+                            @onclick="@(() => SelectTool(DrawingTool.Arrow))" 
+                            title="@DrawingTool.Arrow.GetDisplayName()">
+                        <i class="@DrawingTool.Arrow.GetIconClass()"></i>
+                    </button>
+                    <button class="tool-btn @(IsToolSelected(DrawingTool.Rectangle))" 
+                            @onclick="@(() => SelectTool(DrawingTool.Rectangle))" 
+                            title="@DrawingTool.Rectangle.GetDisplayName()">
+                        <i class="@DrawingTool.Rectangle.GetIconClass()"></i>
+                    </button>
+                    <button class="tool-btn @(IsToolSelected(DrawingTool.Circle))" 
+                            @onclick="@(() => SelectTool(DrawingTool.Circle))" 
+                            title="@DrawingTool.Circle.GetDisplayName()">
+                        <i class="@DrawingTool.Circle.GetIconClass()"></i>
+                    </button>
+                    <button class="tool-btn @(IsToolSelected(DrawingTool.Ellipse))" 
+                            @onclick="@(() => SelectTool(DrawingTool.Ellipse))" 
+                            title="@DrawingTool.Ellipse.GetDisplayName()">
+                        <i class="@DrawingTool.Ellipse.GetIconClass() fa-ellipsis-h"></i>
+                    </button>
+                    <button class="tool-btn @(IsToolSelected(DrawingTool.Triangle))" 
+                            @onclick="@(() => SelectTool(DrawingTool.Triangle))" 
+                            title="@DrawingTool.Triangle.GetDisplayName()">
+                        <i class="@DrawingTool.Triangle.GetIconClass()"></i>
+                    </button>
+                </div>
+            </div>
+
+            <div class="toolbar-section">
+                <label class="section-label">
+                    <input type="checkbox" @bind="_isFilled" />
+                    <i class="fa-solid fa-fill-drip"></i> Fill
+                </label>
+            </div>
+
+            <div class="toolbar-section">
+                <label class="section-label"><i class="fa-solid fa-palette"></i> Color</label>
+                <input type="color" @bind="_currentColor" @bind:event="oninput" class="color-picker" />
+            </div>
+
+            <div class="toolbar-section">
+                <label class="section-label"><i class="fa-solid fa-pen-ruler"></i> Size</label>
+                <input type="range" min="1" max="30" @bind="_lineWidth" @bind:event="oninput" class="size-slider" />
+                <span class="size-value">@_lineWidth</span>
+            </div>
+
+            <div class="toolbar-section">
+                <button class="tool-btn btn-clear" @onclick="ClearCanvasAsync" title="Clear Canvas">
+                    <i class="fa-regular fa-trash-can" style="vertical-align: middle;margin-right: 10px;"></i>
+                    Clear Whiteboard
+                </button>
+            </div>
+        </div>
+
+        <!-- Floating User Badge -->
+        <div class="floating-users" @onclick="ToggleUsersList">
+            <div class="users-badge">
+                <i class="fa-solid fa-users"></i>
+                <span class="user-count-badge">@_connectedUsers</span>
+            </div>
+            @if (_showUsersList)
+            {
+                <div class="users-dropdown" @onclick:stopPropagation="true">
+                    <div class="users-dropdown-header">
+                        <h5>Active Users</h5>
+                        <button class="close-btn" @onclick="ToggleUsersList">
+                            <i class="fa-solid fa-times"></i>
+                        </button>
+                    </div>
+                    <div class="users-dropdown-list">
+                        @if (_activeUsers.Any())
+                        {
+                            @foreach (var user in _activeUsers)
+                            {
+                                <div class="user-item">
+                                    <i class="fa-solid fa-circle-user" style="color: @user.UserColor"></i>
+                                    <span>@user.DisplayName</span>
+                                    @if (user.DisplayName == _userName)
+                                    {
+                                        <span class="you-badge">you</span>
+                                    }
+                                </div>
+                            }
+                        }
+                        else
+                        {
+                            <div class="no-users">No other users</div>
+                        }
+                    </div>
+                </div>
+            }
+        </div>
+
+        <!-- Current User Info -->
+        <div class="floating-user-info">
+            <i class="fa-solid fa-user"></i>
+            <span style="color: @_currentUserColor">@_userName</span>
+            <i class="fa-solid fa-circle status-dot @(_isConnected ? "connected" : "disconnected")"></i>
+        </div>
+
+        <!-- Fullscreen Canvas -->
+        <canvas @ref="_canvasReference" 
+                id="whiteboard-canvas"
+                width="1600" 
+                height="900"
+                @onmousedown="StartDrawingAsync"
+                @onmousemove="DrawAsync"
+                @onmouseup="StopDrawingAsync"
+                @onmouseleave="StopDrawingAsync"
+                @ontouchstart="HandleTouchStartAsync"
+                @ontouchmove="HandleTouchMoveAsync"
+                @ontouchend="HandleTouchEndAsync">
+        </canvas>
+
+        @if (_currentTool == DrawingTool.Laser)
+        {
+            <div class="tool-info">
+                <i class="fa-solid fa-lightbulb"></i>
+                <small>@DrawingTool.Laser.GetDisplayName() active - your cursor will be visible to others temporarily</small>
+            </div>
+        }
+
+        @if (!string.IsNullOrEmpty(_lastNotification))
+        {
+            <div class="notification-toast">
+                <i class="fa-solid fa-info-circle"></i>
+                @_lastNotification
+            </div>
+        }
+    </div>
+}
+
+@code {
+    private ElementReference _canvasReference;
+    private HubConnection? _hubConnection;
+    private System.Threading.Timer? _laserTimer;
+    private System.Threading.Timer? _notificationTimer;
+
+    // User session
+    private bool _hasJoinedSession;
+    private string _userName = string.Empty;
+    private string _currentUserColor = "#6c63ff";
+    private List<WhiteboardUser> _activeUsers = new();
+    private int _connectedUsers;
+    private string _lastNotification = string.Empty;
+    private bool _showUsersList = false;
+
+    // Drawing state
+    private bool _isDrawing;
+    private double _startX, _startY;
+    private double _lastX, _lastY;
+    private double _currentMouseX, _currentMouseY;
+    
+    // Tool settings
+    private DrawingTool _currentTool = DrawingTool.Pen;
+    private string _currentColor = "#000000";
+    private int _lineWidth = 2;
+    private bool _isFilled;
+    
+    // Connection state
+    private bool _isConnected;
+    private bool _isLaserActive;
+    
+    // Preview throttling
+    private DateTime _lastPreviewBroadcast = DateTime.MinValue;
+    private const int PreviewThrottleMs = 50; // Only broadcast preview every 50ms
+
+    private string IsToolSelected(DrawingTool tool) => 
+        _currentTool == tool ? "btn-primary" : "btn-outline-primary";
+
+    private void ToggleUsersList()
+    {
+        _showUsersList = !_showUsersList;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender && _hasJoinedSession)
+        {
+            await CanvasInterop.InitializeAsync(_canvasReference);
+            await CanvasInterop.SetCurrentUserAsync(_userName, _currentUserColor);
+        }
+    }
+
+    private async Task JoinSessionAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_userName)) return;
+
+        _userName = _userName.Trim();
+        _hasJoinedSession = true;
+        StateHasChanged();
+
+        await Task.Delay(100);
+        await InitializeSignalRAsync();
+        await CanvasInterop.InitializeAsync(_canvasReference);
+        await CanvasInterop.SetCurrentUserAsync(_userName, _currentUserColor);
+    }
+
+    private async Task HandleKeyPress(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !string.IsNullOrWhiteSpace(_userName))
+        {
+            await JoinSessionAsync();
+        }
+    }
+
+    private async Task InitializeSignalRAsync()
+    {
+        _hubConnection = new HubConnectionBuilder()
+            .WithUrl(Navigation.ToAbsoluteUri("/whiteboardhub"))
+            .WithAutomaticReconnect()
+            .Build();
+
+        _hubConnection.On<DrawingDataDto>("ReceiveDrawing", HandleRemoteDrawingAsync);
+        _hubConnection.On<DrawingDataDto>("ReceivePreview", HandleRemotePreviewAsync);
+        
+        _hubConnection.On<string>("ClearWhiteboard", async (userName) =>
+        {
+            await InvokeAsync(async () =>
+            {
+                await CanvasInterop.ClearCanvasAsync(_canvasReference);
+                ShowNotification($"{userName} cleared the whiteboard");
+            });
+        });
+
+        _hubConnection.On<System.Text.Json.JsonElement>("UserJoined", (data) =>
+        {
+            InvokeAsync(() =>
+            {
+                try
+                {
+                    var rawData = data.GetRawText();
+                    Console.WriteLine($"UserJoined received - Raw data: {rawData}");
+                    
+                    string displayName = "";
+                    string userColor = "#6c63ff";
+                    int totalUsers = 1;
+
+                    if (data.TryGetProperty("DisplayName", out var displayNameProp))
+                    {
+                        displayName = displayNameProp.GetString() ?? "";
+                        Console.WriteLine($"DisplayName: {displayName}");
+                    }
+
+                    if (data.TryGetProperty("UserColor", out var userColorProp))
+                    {
+                        userColor = userColorProp.GetString() ?? "#6c63ff";
+                        Console.WriteLine($"UserColor: {userColor}");
+                    }
+
+                    if (data.TryGetProperty("TotalUsers", out var totalUsersProp))
+                    {
+                        totalUsers = totalUsersProp.GetInt32();
+                        Console.WriteLine($"TotalUsers from server: {totalUsers}");
+                    }
+                    else
+                    {
+                        Console.WriteLine("WARNING: TotalUsers property not found in UserJoined data!");
+                    }
+                    
+                    // Always update the connected users count
+                    var previousCount = _connectedUsers;
+                    _connectedUsers = totalUsers;
+                    Console.WriteLine($"Updated _connectedUsers from {previousCount} to {_connectedUsers}");
+                    
+                    if (displayName != _userName)
+                    {
+                        ShowNotification($"{displayName} joined the session");
+                    }
+                    else
+                    {
+                        _currentUserColor = userColor;
+                        Console.WriteLine($"This is me! My color: {_currentUserColor}");
+                        // Update JS with the correct user color
+                        _ = CanvasInterop.SetCurrentUserAsync(_userName, _currentUserColor);
+                    }
+                    
+                    StateHasChanged();
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error handling UserJoined: {ex.Message}");
+                    Console.WriteLine($"Stack trace: {ex.StackTrace}");
+                }
+            });
+        });
+
+        _hubConnection.On<System.Text.Json.JsonElement>("UserLeft", async (data) =>
+        {
+            await InvokeAsync(async () =>
+            {
+                try
+                {
+                    Console.WriteLine($"UserLeft received - Raw data: {data.GetRawText()}");
+                    
+                    string connectionId = "";
+                    int totalUsers = 0;
+
+                    if (data.TryGetProperty("ConnectionId", out var connectionIdProp))
+                    {
+                        connectionId = connectionIdProp.GetString() ?? "";
+                    }
+
+                    if (data.TryGetProperty("TotalUsers", out var totalUsersProp))
+                    {
+                        totalUsers = totalUsersProp.GetInt32();
+                        Console.WriteLine($"TotalUsers after user left: {totalUsers}");
+                    }
+
+                    var previousCount = _connectedUsers;
+                    _connectedUsers = totalUsers;
+                    Console.WriteLine($"Updated _connectedUsers from {previousCount} to {_connectedUsers}");
+                    
+                    // Clean up user's cursor, preview, and laser when they disconnect
+                    if (!string.IsNullOrEmpty(connectionId))
+                    {
+                        await CanvasInterop.RemoveCursorAsync(connectionId);
+                        await CanvasInterop.ClearRemotePreviewAsync(connectionId);
+                        await CanvasInterop.RemoveLaserPointAsync(connectionId);
+                    }
+                    
+                    StateHasChanged();
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error handling UserLeft: {ex.Message}");
+                }
+            });
+        });
+
+        _hubConnection.On<List<WhiteboardUser>>("ReceiveUsersList", (users) =>
+        {
+            InvokeAsync(() =>
+            {
+                Console.WriteLine($"ReceiveUsersList - Count: {users?.Count ?? 0}");
+                _activeUsers = users ?? new List<WhiteboardUser>();
+                
+                // Also update the connected users count from the list
+                var listCount = _activeUsers.Count;
+                if (listCount > 0 && listCount != _connectedUsers)
+                {
+                    Console.WriteLine($"Updating _connectedUsers from user list: {listCount}");
+                    _connectedUsers = listCount;
+                }
+                
+                StateHasChanged();
+            });
+        });
+
+        _hubConnection.Reconnecting += _ =>
+        {
+            InvokeAsync(() =>
+            {
+                _isConnected = false;
+                StateHasChanged();
+            });
+            return Task.CompletedTask;
+        };
+
+        _hubConnection.Reconnected += async _ =>
+        {
+            await InvokeAsync(async () =>
+            {
+                _isConnected = true;
+                if (_hubConnection != null)
+                {
+                    await _hubConnection.SendAsync("JoinSession", _userName);
+                }
+                StateHasChanged();
+            });
+        };
+
+        _hubConnection.Closed += _ =>
+        {
+            InvokeAsync(() =>
+            {
+                _isConnected = false;
+                StateHasChanged();
+            });
+            return Task.CompletedTask;
+        };
+
+        try
+        {
+            await _hubConnection.StartAsync();
+            _isConnected = true;
+            await _hubConnection.SendAsync("JoinSession", _userName);
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SignalR connection error: {ex.Message}");
+        }
+    }
+
+    private void ShowNotification(string message)
+    {
+        InvokeAsync(() =>
+        {
+            _lastNotification = message;
+            _notificationTimer?.Dispose();
+            _notificationTimer = new System.Threading.Timer(_ =>
+            {
+                InvokeAsync(() =>
+                {
+                    _lastNotification = string.Empty;
+                    StateHasChanged();
+                });
+            }, null, 3000, Timeout.Infinite);
+            StateHasChanged();
+        });
+    }
+
+    private async Task StartDrawingAsync(MouseEventArgs e)
+    {
+        _isDrawing = true;
+        var coords = await CanvasInterop.GetCanvasCoordinatesAsync(_canvasReference, e.ClientX, e.ClientY);
+        
+        _startX = _lastX = coords.X;
+        _startY = _lastY = coords.Y;
+        _currentMouseX = coords.X;
+        _currentMouseY = coords.Y;
+
+        if (_currentTool.IsShapeTool())
+        {
+            await CanvasInterop.SaveCanvasStateAsync(_canvasReference);
+        }
+    }
+
+    private async Task DrawAsync(MouseEventArgs e)
+    {
+        var coords = await CanvasInterop.GetCanvasCoordinatesAsync(_canvasReference, e.ClientX, e.ClientY);
+        _currentMouseX = coords.X;
+        _currentMouseY = coords.Y;
+
+        // Always send cursor position when mouse moves (even when not drawing)
+        if (_hubConnection?.State == HubConnectionState.Connected)
+        {
+            try
+            {
+                await _hubConnection.SendAsync("UpdateCursorPosition", _currentMouseX, _currentMouseY);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error sending cursor position: {ex.Message}");
+            }
+        }
+
+        if (!_isDrawing) return;
+
+        if (_currentTool.IsFreehandTool())
+        {
+            await DrawFreehandAsync(coords.X, coords.Y);
+        }
+        else if (_currentTool == DrawingTool.Laser)
+        {
+            await DrawLaserAsync(coords.X, coords.Y);
+        }
+        else if (_currentTool.IsShapeTool())
+        {
+            await PreviewShapeAsync(coords.X, coords.Y);
+        }
+    }
+
+    private async Task StopDrawingAsync(MouseEventArgs e)
+    {
+        if (!_isDrawing) return;
+
+        if (_currentTool.IsShapeTool())
+        {
+            var coords = await CanvasInterop.GetCanvasCoordinatesAsync(_canvasReference, e.ClientX, e.ClientY);
+            await FinalizeShapeAsync(coords.X, coords.Y);
+        }
+        else if (_currentTool == DrawingTool.Laser && _isLaserActive)
+        {
+            await EndLaserDrawingAsync();
+        }
+
+        _isDrawing = false;
+    }
+
+    private async Task DrawFreehandAsync(double x, double y)
+    {
+        var action = CreateDrawingAction(DrawingType.Draw, x, y);
+        
+        // Draw locally with user info
+        await CanvasInterop.DrawLineAsync(
+            _canvasReference, 
+            _lastX, _lastY, 
+            x, y, 
+            action.Color, 
+            action.LineWidth,
+            _userName,
+            _currentUserColor);
+
+        await BroadcastDrawingAsync(action);
+
+        _lastX = x;
+        _lastY = y;
+    }
+
+    private async Task DrawLaserAsync(double x, double y)
+    {
+        _isLaserActive = true;
+
+        var action = new DrawingAction
+        {
+            Type = DrawingType.Laser,
+            Tool = DrawingTool.Laser,
+            X = x,
+            Y = y,
+            Color = _currentColor,
+            UserName = _userName,
+            UserColor = _currentUserColor
+        };
+
+        // Draw locally with 'local' as connectionId
+        await CanvasInterop.DrawLaserPointAsync(_canvasReference, x, y, _currentColor, _userName, _currentUserColor, "local");
+        await BroadcastDrawingAsync(action);
+    }
+
+    private async Task EndLaserDrawingAsync()
+    {
+        _isLaserActive = false;
+
+        var endSignal = new DrawingAction
+        {
+            Type = DrawingType.Laser,
+            Tool = DrawingTool.Laser,
+            IsLaserEnd = true
+        };
+
+        await BroadcastDrawingAsync(endSignal);
+        
+        // Clear local laser point immediately
+        await CanvasInterop.RemoveLaserPointAsync("local");
+        
+        ScheduleLaserFade();
+    }
+
+    private async Task PreviewShapeAsync(double x, double y)
+    {
+        // Clear temp canvas and restore permanent canvas state for clean preview
+        await CanvasInterop.RestoreCanvasStateAsync(_canvasReference);
+        
+        // Show user's own name on preview
+        await CanvasInterop.DrawShapePreviewAsync(
+            _canvasReference, 
+            _currentTool, 
+            _startX, _startY, 
+            x, y, 
+            _currentColor, 
+            _lineWidth, 
+            _isFilled,
+            _userName,  // Show own name on preview
+            _currentUserColor);
+
+        // Broadcast preview to others (throttled)
+        await BroadcastPreviewAsync(x, y);
+    }
+
+    private async Task FinalizeShapeAsync(double endX, double endY)
+    {
+        var action = new DrawingAction
+        {
+            Type = DrawingType.Shape,
+            Tool = _currentTool,
+            StartX = _startX,
+            StartY = _startY,
+            EndX = endX,
+            EndY = endY,
+            Color = _currentColor,
+            LineWidth = _lineWidth,
+            IsFilled = _isFilled,
+            UserName = _userName,
+            UserColor = _currentUserColor
+        };
+
+        // Draw locally with user info (this will add to permanent canvas)
+        await CanvasInterop.DrawShapeAsync(
+            _canvasReference, 
+            _currentTool, 
+            _startX, _startY, 
+            endX, endY, 
+            _currentColor, 
+            _lineWidth, 
+            _isFilled,
+            _userName,
+            _currentUserColor);
+
+        // Clear temp canvas after finalizing to remove preview
+        await CanvasInterop.RestoreCanvasStateAsync(_canvasReference);
+
+        await BroadcastDrawingAsync(action);
+    }
+
+    private async Task HandleTouchStartAsync(TouchEventArgs e)
+    {
+        if (e.Touches.Length == 0) return;
+
+        var touch = e.Touches[0];
+        var coords = await CanvasInterop.GetCanvasCoordinatesAsync(_canvasReference, touch.ClientX, touch.ClientY);
+        
+        _isDrawing = true;
+        _startX = _lastX = coords.X;
+        _startY = _lastY = coords.Y;
+        _currentMouseX = coords.X;
+        _currentMouseY = coords.Y;
+
+        if (_currentTool.IsShapeTool())
+        {
+            await CanvasInterop.SaveCanvasStateAsync(_canvasReference);
+        }
+    }
+
+    private async Task HandleTouchMoveAsync(TouchEventArgs e)
+    {
+        if (e.Touches.Length == 0) return;
+
+        var touch = e.Touches[0];
+        var coords = await CanvasInterop.GetCanvasCoordinatesAsync(_canvasReference, touch.ClientX, touch.ClientY);
+        _currentMouseX = coords.X;
+        _currentMouseY = coords.Y;
+
+        if (!_isDrawing) return;
+
+        if (_currentTool.IsFreehandTool())
+        {
+            await DrawFreehandAsync(coords.X, coords.Y);
+        }
+        else if (_currentTool == DrawingTool.Laser)
+        {
+            await DrawLaserAsync(coords.X, coords.Y);
+        }
+        else if (_currentTool.IsShapeTool())
+        {
+            await PreviewShapeAsync(coords.X, coords.Y);
+        }
+    }
+
+    private async Task HandleTouchEndAsync(TouchEventArgs e)
+    {
+        if (!_isDrawing) return;
+
+        if (_currentTool.IsShapeTool() && e.ChangedTouches.Length > 0)
+        {
+            var touch = e.ChangedTouches[0];
+            var coords = await CanvasInterop.GetCanvasCoordinatesAsync(_canvasReference, touch.ClientX, touch.ClientY);
+            await FinalizeShapeAsync(coords.X, coords.Y);
+        }
+        else if (_currentTool == DrawingTool.Laser && _isLaserActive)
+        {
+            await EndLaserDrawingAsync();
+        }
+
+        _isDrawing = false;
+    }
+
+    private async Task HandleRemoteDrawingAsync(DrawingDataDto dto)
+    {
+        var action = dto.ToEntity();
+
+        switch (action.Type)
+        {
+            case DrawingType.Draw:
+                await CanvasInterop.DrawLineAsync(
+                    _canvasReference, 
+                    action.PreviousX, action.PreviousY, 
+                    action.X, action.Y, 
+                    action.Color, 
+                    action.LineWidth,
+                    action.UserName,
+                    action.UserColor);
+                break;
+
+            case DrawingType.Shape:
+                // Clear any preview for this connection before drawing final shape
+                if (!string.IsNullOrEmpty(action.ConnectionId))
+                {
+                    await CanvasInterop.ClearRemotePreviewAsync(action.ConnectionId);
+                }
+                
+                await CanvasInterop.DrawShapeAsync(
+                    _canvasReference, 
+                    action.Tool, 
+                    action.StartX, action.StartY, 
+                    action.EndX, action.EndY, 
+                    action.Color, 
+                    action.LineWidth, 
+                    action.IsFilled,
+                    action.UserName,
+                    action.UserColor);
+                break;
+
+            case DrawingType.Laser:
+                if (action.IsLaserEnd)
+                {
+                    // Clear laser for this connection
+                    if (!string.IsNullOrEmpty(action.ConnectionId))
+                    {
+                        await CanvasInterop.RemoveLaserPointAsync(action.ConnectionId);
+                    }
+                }
+                else
+                {
+                    await CanvasInterop.DrawLaserPointAsync(
+                        _canvasReference, 
+                        action.X, action.Y, 
+                        action.Color,
+                        action.UserName,
+                        action.UserColor,
+                        action.ConnectionId); // Pass connectionId
+                }
+                break;
+        }
+    }
+
+    private async Task ClearCanvasAsync()
+    {
+        await CanvasInterop.ClearCanvasAsync(_canvasReference);
+
+        if (_hubConnection?.State == HubConnectionState.Connected)
+        {
+            await _hubConnection.SendAsync("ClearWhiteboard");
+        }
+
+        StateService.Clear();
+    }
+
+    private void SelectTool(DrawingTool tool) => _currentTool = tool;
+
+    private DrawingAction CreateDrawingAction(DrawingType type, double x, double y) => new()
+    {
+        Type = type,
+        Tool = _currentTool,
+        X = x,
+        Y = y,
+        PreviousX = _lastX,
+        PreviousY = _lastY,
+        Color = _currentTool == DrawingTool.Eraser ? "#FFFFFF" : _currentColor,
+        LineWidth = _currentTool == DrawingTool.Eraser ? _lineWidth * 3 : _lineWidth,
+        UserName = _userName,
+        UserColor = _currentUserColor
+    };
+
+    private async Task BroadcastDrawingAsync(DrawingAction action)
+    {
+        if (_hubConnection?.State == HubConnectionState.Connected)
+        {
+            var dto = DrawingDataDto.FromEntity(action);
+            await _hubConnection.SendAsync("SendDrawing", dto);
+        }
+    }
+
+    private async Task BroadcastPreviewAsync(double endX, double endY)
+    {
+        // Throttle preview broadcasts to avoid overwhelming the network
+        var now = DateTime.UtcNow;
+        if ((now - _lastPreviewBroadcast).TotalMilliseconds < PreviewThrottleMs)
+        {
+            return; // Skip this preview broadcast
+        }
+        
+        _lastPreviewBroadcast = now;
+        
+        if (_hubConnection?.State == HubConnectionState.Connected)
+        {
+            var previewAction = new DrawingAction
+            {
+                Type = DrawingType.Shape,
+                Tool = _currentTool,
+                StartX = _startX,
+                StartY = _startY,
+                EndX = endX,
+                EndY = endY,
+                Color = _currentColor,
+                LineWidth = _lineWidth,
+                IsFilled = _isFilled,
+                UserName = _userName,
+                UserColor = _currentUserColor
+            };
+
+            var dto = DrawingDataDto.FromEntity(previewAction, isPreview: true);
+            await _hubConnection.SendAsync("SendPreview", dto);
+        }
+    }
+
+    private async Task HandleRemotePreviewAsync(DrawingDataDto dto)
+    {
+        var action = dto.ToEntity();
+
+        if (action.Type == DrawingType.Shape && !string.IsNullOrEmpty(action.ConnectionId))
+        {
+            // Store remote preview in the map (will be rendered by the render loop)
+            await CanvasInterop.StoreRemotePreviewAsync(
+                action.ConnectionId,
+                action.Tool, 
+                action.StartX, action.StartY, 
+                action.EndX, action.EndY, 
+                action.Color, 
+                action.LineWidth, 
+                action.IsFilled,
+                action.UserName,
+                action.UserColor);
+        }
+    }
+
+    private void ScheduleLaserFade()
+    {
+        _laserTimer?.Dispose();
+        _laserTimer = new System.Threading.Timer(async _ =>
+        {
+            await InvokeAsync(async () =>
+            {
+                await CanvasInterop.ClearLaserPointsAsync(_canvasReference);
+            });
+        }, null, 500, Timeout.Infinite);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _laserTimer?.Dispose();
+        _notificationTimer?.Dispose();
+        
+        if (_hubConnection is not null)
+        {
+            await _hubConnection.DisposeAsync();
+        }
+    }
+}
